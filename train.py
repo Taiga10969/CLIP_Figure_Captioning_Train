@@ -1,3 +1,4 @@
+import os
 import random
 import numpy as np
 
@@ -50,7 +51,7 @@ t5_config = T5Config.from_pretrained(config.t5_model)
 t5_model = T5ForConditionalGeneration.from_pretrained(config.t5_model, config=t5_config)
 text_encoder = t5_model.get_encoder()
 
-vision_encoder = create_eva_vit_g(img_size = 224, 
+vision_encoder = create_eva_vit_g(img_size = 224,
                                   drop_path_rate = 0, 
                                   use_checkpoint = False, 
                                   #precision = "fp16",
@@ -60,10 +61,16 @@ vision_encoder = create_eva_vit_g(img_size = 224,
 for param in text_encoder.parameters():
         param.requires_grad = False
 
-text_encoder.to(torch.float)
+text_encoder.to(torch.float16)
 vision_encoder.to(torch.float)
 
-model = CLIP_model(t5_tokenizer, text_encoder, vision_encoder, config.vision_encoder_dim, config.text_encoder_dim)
+#t = nn.Parameter(torch.tensor(1.0, requires_grad=True))
+
+model = CLIP_model(text_encoder = text_encoder,
+                   vision_encoder = vision_encoder, 
+                   vision_encoder_dim = config.vision_encoder_dim, 
+                   text_encoder_dim = config.text_encoder_dim)
+
 model = nn.DataParallel(model)
 model = model.to(device)  # モデルをGPUに転送
 mode = model.to(torch.float)
@@ -76,11 +83,21 @@ transform=transforms.Compose([transforms.Resize((224, 224)),
                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                               ])
 
+#dataset = SciCapDataset(dataset_path = config.scicap_data_path, 
+#                        transform = transform,
+#                        train = 'ALL',                    # 学習用データなのか
+#                        train_include_val = True,         # データにvalデータを含めるか
+#                        include_subfig = True,            # データにsubfigデータを含めるか
+#                        use_remove = True,                # lowercase-and-token-and-remove（figure:などを消去した）データを使用するか
+#                        retrun_caption = True,
+#                        vis_processors=None,
+#                        )
+
 dataset = SciCapDataset(dataset_path = config.scicap_data_path, 
                         transform = transform,
-                        train = 'ALL',                    # 学習用データなのか
+                        train = False,                    # 学習用データなのか
                         train_include_val = True,         # データにvalデータを含めるか
-                        include_subfig = True,            # データにsubfigデータを含めるか
+                        include_subfig = False,            # データにsubfigデータを含めるか
                         use_remove = True,                # lowercase-and-token-and-remove（figure:などを消去した）データを使用するか
                         retrun_caption = True,
                         vis_processors=None,
@@ -100,9 +117,16 @@ optimizer = optim.AdamW(params = model.parameters(),
                         eps=config.eps, 
                         weight_decay=config.weight_decay)
 
-lr_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer,
-                                                              T_0=config.t_0, 
-                                                              T_mult=config.t_mult)
+#lr_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer,
+#                                                              T_0=config.t_0, 
+#                                                              T_mult=config.t_mult)
+
+#optimizer_t = optim.AdamW(params = [t],
+#                          lr=config.lr, 
+#                          betas=config.betas, 
+#                          eps=config.eps, 
+#                          weight_decay=config.weight_decay)
+
 
 ### one epoch train ================================================================================
 def train(model, train_loader, criterion, optimizer, device):
@@ -121,27 +145,41 @@ def train(model, train_loader, criterion, optimizer, device):
         image = image.to(device, dtype=torch.float)
         label = torch.eye(image.shape[0]).to(device)
 
+
+        input_texts = t5_tokenizer(text=caption,
+                                   padding = 'max_length', 
+                                   truncation = True, 
+                                   max_length = config.max_length,
+                                   return_tensors = 'pt')
+        
+        input_texts = input_texts.to(device)
+
+
         optimizer.zero_grad()
 
-        texts_output, image_output = model(caption, image)
+        #outputs = model(input_texts, image)
+        texts_output, image_output = model(input_texts.input_ids, input_texts.attention_mask, image)
 
-        print(texts_output.shape)
-        print(image_output.shape)
+        #print(texts_output.shape)
+        #print(image_output.shape)
 
-        outputs = torch.mm(texts_output, image_output.T) * np.exp(config.t)
-        print('outputs.shape : ', outputs.shape)
-        print('outputs : ', outputs)
+        outputs = torch.mm(texts_output, image_output.T)# * np.exp(config.t)
+        #print(outputs)
+        #print(outputs.shape)
         
-        outputs = outputs.reshape(config.batch_size, config.batch_size)
-        
-        print(outputs.shape)
-        print(torch.argmax(label, dim=0).shape)
+        #outputs = outputs.reshape(config.batch_size, config.batch_size)
 
-        loss = (criterion(outputs, torch.argmax(label, dim=1)) + criterion(outputs, torch.argmax(label, dim=0))) / 2
-        
+        #print(outputs.shape)
+        #print(torch.argmax(label, dim=0))
+        target = torch.argmax(label, dim=0)
+        #loss = (criterion(outputs, torch.argmax(label, dim=1)) + criterion(outputs, torch.argmax(label, dim=0))) / 2
+        loss = criterion(outputs, target)
+
         loss.backward()
         
         optimizer.step()
+        #optimizer_t.step()
+
         sum_loss += loss.item()
 
         # lossを進捗バーに表示
@@ -167,5 +205,14 @@ for epoch in range(1, config.num_epoch+1):
 
     # wandb
     if config.wandb == True:
-        wandb.log({"epoch_loss": train_loss()})
+        wandb.log({"epoch_loss": train_loss})
+    
+    torch.save(model.module.vision_encoder.state_dict(), os.path.join(config.save_param_pth, 'vit_model.pth'))
+    #torch.save(vision_encoder.state_dict(), os.path.join(config.save_param_pth, 'vit_model.pth'))
+
+
+
+
+# WandBへ実行の終了を知らせる
+wandb.finish()
 
