@@ -3,6 +3,8 @@ from PIL import Image
 import json
 from torch.utils.data import Dataset
 
+from lavis.models import load_model_and_preprocess
+
 
 class SciCapDataset(Dataset):
     def __init__(self,
@@ -14,6 +16,7 @@ class SciCapDataset(Dataset):
                  use_remove = True,          # lowercase-and-token-and-remove（figure:などを消去した）データを使用するか
                  retrun_caption = True,
                  vis_processors=None,
+                 #text_tokenizer=None
                  ):
         
         self.path = dataset_path
@@ -24,6 +27,7 @@ class SciCapDataset(Dataset):
         self.use_remove = use_remove
         self.return_caption = retrun_caption
         self.vis_processors = vis_processors
+        #self.text_tokenizer = text_tokenizer
 
         self.image_filenames = self._load_image_filenames()
 
@@ -100,7 +104,7 @@ class SciCapDataset(Dataset):
             image = self.transform(image)
 
         if self.vis_processors:
-            image = self.vis_processors['eval'](image).unsqueeze(0)
+            image = self.vis_processors['eval'](image)#.unsqueeze(0)
 
         if self.return_caption == True:
             file_name_with_extension = os.path.basename(img_path)
@@ -127,6 +131,14 @@ class SciCapDataset(Dataset):
                     caption = None
                     print('except FileNotFoundError')
             
+            #if self.text_tokenizer:
+            #    caption = self.text_tokenizer(text=caption,
+            #                                  padding = 'longest', 
+            #                                  truncation = True, 
+            #                                  #max_length = 74,
+            #                                  return_tensors = 'pt')
+
+            
             return image, caption, img_path
         
         else:
@@ -143,25 +155,60 @@ if __name__ == '__main__':
     from torch.utils.data import DataLoader
     from torchvision.transforms import transforms
 
+    import utils
+
     sicap_data_path = '/taiga/Datasets/scicap_data'
 
-    transform=transforms.Compose([transforms.Resize((224, 224)), 
-                                  transforms.ToTensor(),
-                                  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)), 
-                                ])
+    #transform=transforms.Compose([transforms.Resize((224, 224)), 
+    #                              transforms.ToTensor(),
+    #                              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)), 
+    #                            ])
+    #
+    _, vis_processors, _ = load_model_and_preprocess(name='blip2_t5',
+                                                     model_type='pretrain_flant5xl', #pretrain_flant5xl, caption_coco_flant5xl, pretrain_flant5xxl
+                                                     is_eval=True,
+                                                     #device=device
+                                                    )
     
 
     dataset = SciCapDataset(dataset_path = sicap_data_path, 
-                            transform = transform,
+                            transform = None,
                             train = 'ALL',               # 学習用データなのか
                             train_include_val = True,         # データにvalデータを含めるか
                             include_subfig = True,     # データにsubfigデータを含めるか
                             use_remove = True,          # lowercase-and-token-and-remove（figure:などを消去した）データを使用するか
                             retrun_caption = True,
-                            vis_processors=None,
+                            vis_processors = vis_processors,
                             )
     
     print(len(dataset))
+    
+    image, caption, img_path = dataset[2]
+
+    print(image)
+    print(image.shape)
+
+    print(image.shape)
+    print(len(caption))
+
+    utils.show_vis_processor(image)
+    
+    '''
+    # DataLoaderを使用してデータをバッチで読み込む
+    dataloader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=4)
+
+    Iter = iter(dataloader)
+    image, caption, img_path = next(Iter)
+    print(image.shape)
+    print(len(caption))
+
+    utils.show_vis_processor(image)
+    '''
+
+
+
+
+
     # DataLoaderを使用してデータをバッチで読み込む
     #dataloader = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=4)  # バッチサイズやnum_workersは適切に設定してください
     #
